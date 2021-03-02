@@ -9,7 +9,7 @@
 #include "riscv.h"
 #include "defs.h"
 
-void freerange(void *pa_start, void *pa_end);
+
 
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
@@ -18,25 +18,44 @@ struct run {
   struct run *next;
 };
 
-struct {
+struct kmem {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+  uint64 nlists;
+};
+
+struct kmem kmems[NCPU];
+
+void freerange(void *pa_start, void *pa_end, struct kmem *pkmem);
+void _kfree(void *pa, struct kmem *pkmem);
+void * _kalloc(struct kmem *pkmem);
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
-  freerange(end, (void*)PHYSTOP);
+  char *q;
+  char *p  = (char*)PGROUNDUP((uint64)end);
+  int pages = ((char *)PHYSTOP - p) / PGSIZE;
+  int pagesPerCPU = pages / NCPU;
+
+  for(int i=0; i<NCPU; ++i) {
+    initlock(&kmems[i].lock, "kmem");
+    kmems[i].nlists = 0;
+    if(i == NCPU - 1) q = (char *)PHYSTOP;
+    else q = p + pagesPerCPU * PGSIZE; 
+    freerange(p, q, &kmems[i]);
+    p = q;
+  }
+ 
 }
 
 void
-freerange(void *pa_start, void *pa_end)
+freerange(void *pa_start, void *pa_end, struct kmem *pkmem)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
   for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
-    kfree(p);
+    _kfree(p, pkmem);
 }
 
 // Free the page of physical memory pointed at by v,
@@ -45,6 +64,12 @@ freerange(void *pa_start, void *pa_end)
 // initializing the allocator; see kinit above.)
 void
 kfree(void *pa)
+{
+  _kfree(pa, &kmems[cpuid()]);
+}
+
+void
+_kfree(void *pa, struct kmem *pkmem)
 {
   struct run *r;
 
@@ -56,25 +81,44 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  acquire(&pkmem->lock);
+  r->next = pkmem->freelist;
+  pkmem->freelist = r;
+  pkmem->nlists += 1;
+  release(&pkmem->lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.
 void *
-kalloc(void)
+kalloc()
+{
+  int idx = cpuid();
+  if(kmems[cpuid()].nlists == 0) {
+    for(int i=NCPU-1; i>=0; --i)
+    {
+      if(kmems[i].nlists > 0) {
+        idx = i;
+        break;
+      }
+    }
+  }
+  return _kalloc(&kmems[idx]);
+}
+
+void *
+_kalloc(struct kmem *pkmem)
 {
   struct run *r;
 
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+  acquire(&pkmem->lock);
+  r = pkmem->freelist;
+  if(r){
+    pkmem->nlists -= 1;
+    pkmem->freelist = r->next;
+  }
+  release(&pkmem->lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
