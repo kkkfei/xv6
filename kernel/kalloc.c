@@ -94,7 +94,9 @@ _kfree(void *pa, struct kmem *pkmem)
 void *
 kalloc()
 {
+  push_off();
   int idx = cpuid();
+  pop_off();
   if(kmems[cpuid()].nlists == 0) {
     for(int i=NCPU-1; i>=0; --i)
     {
