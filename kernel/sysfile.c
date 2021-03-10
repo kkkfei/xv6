@@ -304,15 +304,39 @@ sys_open(void)
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
-    }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
-      iunlockput(ip);
-      end_op();
-      return -1;
+    int cnt = 0;
+    while(1)
+    {
+      if((ip = namei(path)) == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      if(ip->type == T_DIR && omode != O_RDONLY){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      } else if(ip->type == T_SYMLINK) {
+        if(omode & O_NOFOLLOW) break;
+
+        if(readi(ip, 0, (uint64)path, 0, MAXPATH) != MAXPATH) {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+
+        iunlockput(ip);
+        ++cnt;
+
+        if(cnt > 3) 
+        {
+          end_op();
+          return -1;
+        }
+
+      } else {
+        break;
+      }
     }
   }
 
@@ -482,5 +506,35 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+
+// Create the path new as a link to the same inode as old.
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], linkpath[MAXPATH];
+  struct inode *ip;
+  int r;
+ 
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, linkpath, MAXPATH) < 0)
+    return -1;
+  
+  begin_op();
+  if((ip = create(linkpath, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+  if((r = writei(ip, 0, (uint64)target, 0, MAXPATH)) != MAXPATH) 
+  {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
+
   return 0;
 }
