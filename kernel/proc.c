@@ -128,6 +128,8 @@ found:
     return 0;
   }
 
+  p->mmap_addr = TRAPFRAME;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -146,6 +148,18 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+
+  struct mmap_node *n = 0;
+  // uint64 leastva = TRAPFRAME;
+  for(int i=0; i<MMNODES; ++i) {
+    n = &p->mmap_nodes[i];
+    if(n->startva == 0) continue;
+
+    uint64 npages = (uint64)(PGROUNDUP(n->length)/PGSIZE);
+    uvmunmap_mmap(p->pagetable, n->startva, npages, 1);
+    n->startva = n->length = 0;
+  }
+
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -296,6 +310,17 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  for(i =0; i < MMNODES; i++)
+  {
+    if(p->mmap_nodes[i].startva != 0)
+    {
+      np->mmap_nodes[i] = p->mmap_nodes[i];
+      filedup(np->mmap_nodes[i].f);
+    }
+  }
+  uvmcopy_mm(p->pagetable, np->pagetable, p->mmap_addr);
+  np->mmap_addr = p->mmap_addr;
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -350,6 +375,13 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for(int i=0; i<MMNODES; ++i) {
+    if(p->mmap_nodes[i].startva != 0) {
+      fileclose(p->mmap_nodes[i].f);
+      p->mmap_nodes[i].f = 0;
     }
   }
 
