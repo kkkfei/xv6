@@ -358,11 +358,16 @@ void net_rx(struct mbuf *m)
   struct eth *ethhdr;
   uint16 type;
 
+ 
   ethhdr = mbufpullhdr(m, *ethhdr);
   if (!ethhdr) {
     mbuffree(m);
+    printf("net_rx ret");
     return;
   }
+
+
+
 
   type = ntohs(ethhdr->type);
   if (type == ETHTYPE_IP)
